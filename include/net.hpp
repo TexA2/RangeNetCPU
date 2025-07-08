@@ -61,7 +61,7 @@ namespace rangenet {
 
     void getPoints(const std::string& cloud_path);
 
-    std::vector<std::vector<float>> doProjection_origin();
+    std::vector<std::vector<float>> doProjection_origin(bool yaml = true);
 
     std::vector<int> getLabelMap() { return _lable_map;}
     std::map<uint32_t, color> getColorMap() { return _color_map;}
@@ -76,10 +76,7 @@ namespace rangenet {
 
     void convertToPointCloud(const std::vector<std::array<uint8_t, 3>>& colors);
 
-
-    void doProjection_rework(const RangeImageParams& params);
-
-
+    void getData();
 
   protected:
   
