@@ -1,113 +1,147 @@
 #include "net.hpp"
 
 
+void calculateMean(const std::vector<std::vector<float>>& inputs)
+{
+  const int num_feature = 5; // range, x, y, z, intensity
+
+  std::cout << inputs.size() << std::endl;
+
+  std::vector<float>means(num_feature, 0);
+  std::vector<float>stds (num_feature, 0);
+
+  for (const auto& point : inputs)
+  {
+    for(int i = 0; i < num_feature; ++i)
+      means[i] += point[i];
+  }
+
+
+  for(int i = 0; i < num_feature; ++i)
+    means[i] /= inputs.size();
+
+  for (const auto& point : inputs)
+  {
+    for(int i = 0; i < num_feature; ++i)
+      stds[i] += std::pow(point[i] - means[i], 2);
+  }  
+
+  for (int i = 0; i < num_feature; ++i) 
+    stds[i] = std::sqrt(stds[i] / inputs.size());
+
+  std::cout << "_img_means" << std::endl;
+  for (const auto& i : means)
+    std::cout << i << " ";
+  std::cout << std::endl;
+
+
+  std::cout << "_img_stds" << std::endl;
+    for (const auto& i : stds)
+    std::cout << i << " ";
+  std::cout << std::endl;
+}
+
 namespace rangenet {
   namespace segmentation {
 
   Net::Net(const std::string& model_path): _model_path(model_path)
   {
+      // Try to get the config file as well
+      std::string arch_cfg_path = _model_path + "/arch_cfg.yaml";
+      try {
+        arch_cfg = YAML::LoadFile(arch_cfg_path);
+      } catch (YAML::Exception& ex) {
+        throw std::runtime_error("Can't open cfg.yaml from " + arch_cfg_path);
+      }
 
-    // Try to get the config file as well
-    std::string arch_cfg_path = _model_path + "/arch_cfg.yaml";
-    try {
-      arch_cfg = YAML::LoadFile(arch_cfg_path);
-    } catch (YAML::Exception& ex) {
-      throw std::runtime_error("Can't open cfg.yaml from " + arch_cfg_path);
-    }
+      // Assign fov_up and fov_down from arch_cfg
+      _fov_up = arch_cfg["dataset"]["sensor"]["fov_up"].as<double>();
+      _fov_down = arch_cfg["dataset"]["sensor"]["fov_down"].as<double>();
 
-    // Assign fov_up and fov_down from arch_cfg
-    _fov_up = arch_cfg["dataset"]["sensor"]["fov_up"].as<double>();
-    _fov_down = arch_cfg["dataset"]["sensor"]["fov_down"].as<double>();
+      std::string data_cfg_path = _model_path + "/data_cfg.yaml";
+      try {
+        data_cfg = YAML::LoadFile(data_cfg_path);
+      } catch (YAML::Exception& ex) {
+        throw std::runtime_error("Can't open cfg.yaml from " + data_cfg_path);
+      }
 
-    std::cout << "fov_up from YAML "   << _fov_up << std::endl;
-    std::cout << "fov_down from YAML " << _fov_down << std::endl;
+      // Get label dictionary from yaml cfg
+      YAML::Node color_map;
+      try {
+        color_map = data_cfg["color_map"];
+      } catch (YAML::Exception& ex) {
+        std::cerr << "Can't open one the label dictionary from cfg in " + data_cfg_path
+                  << std::endl;
+        throw ex;
+      }
 
-    std::string data_cfg_path = _model_path + "/data_cfg.yaml";
-    try {
-      data_cfg = YAML::LoadFile(data_cfg_path);
-    } catch (YAML::Exception& ex) {
-      throw std::runtime_error("Can't open cfg.yaml from " + data_cfg_path);
-    }
+      // Generate string map from xentropy indexes (that we'll get from argmax)
+      YAML::const_iterator it;
 
-    // Get label dictionary from yaml cfg
-    YAML::Node color_map;
-    try {
-      color_map = data_cfg["color_map"];
-    } catch (YAML::Exception& ex) {
-      std::cerr << "Can't open one the label dictionary from cfg in " + data_cfg_path
-                << std::endl;
-      throw ex;
-    }
+      for (it = color_map.begin(); it != color_map.end(); ++it) {
+        // Get label and key
+        int key = it->first.as<int>();  // <- key
+        Net::color color = std::make_tuple(
+            static_cast<u_char>(color_map[key][0].as<unsigned int>()),
+            static_cast<u_char>(color_map[key][1].as<unsigned int>()),
+            static_cast<u_char>(color_map[key][2].as<unsigned int>()));
+        _color_map[key] = color;
+      }
 
-    // Generate string map from xentropy indexes (that we'll get from argmax)
-    YAML::const_iterator it;
+      // Get learning class labels from yaml cfg
+      YAML::Node learning_class;
+      try {
+        learning_class = data_cfg["learning_map_inv"];
+      } catch (YAML::Exception& ex) {
+        std::cerr << "Can't open one the label dictionary from cfg in " + data_cfg_path
+                  << std::endl;
+        throw ex;
+      }
 
-    for (it = color_map.begin(); it != color_map.end(); ++it) {
-      // Get label and key
-      int key = it->first.as<int>();  // <- key
-      Net::color color = std::make_tuple(
-          static_cast<u_char>(color_map[key][0].as<unsigned int>()),
-          static_cast<u_char>(color_map[key][1].as<unsigned int>()),
-          static_cast<u_char>(color_map[key][2].as<unsigned int>()));
-      _color_map[key] = color;
-    }
+      // get the number of classes
+      _n_classes = learning_class.size();
 
-    // Get learning class labels from yaml cfg
-    YAML::Node learning_class;
-    try {
-      learning_class = data_cfg["learning_map_inv"];
-    } catch (YAML::Exception& ex) {
-      std::cerr << "Can't open one the label dictionary from cfg in " + data_cfg_path
-                << std::endl;
-      throw ex;
-    }
+      // remapping the colormap lookup table
+      _lable_map.resize(_n_classes);
+      for (it = learning_class.begin(); it != learning_class.end(); ++it) {
+        int key = it->first.as<int>();  // <- key
+        _argmax_to_rgb[key] = _color_map[learning_class[key].as<unsigned int>()];
+        _lable_map[key] = learning_class[key].as<unsigned int>();
+      }
 
-    // get the number of classes
-    _n_classes = learning_class.size();
+      // get image size
+      _img_h = arch_cfg["dataset"]["sensor"]["img_prop"]["height"].as<int>();
+      _img_w = arch_cfg["dataset"]["sensor"]["img_prop"]["width"].as<int>();
+      _img_d = 5; // range, x, y, z, remission
 
-    // remapping the colormap lookup table
-    _lable_map.resize(_n_classes);
-    for (it = learning_class.begin(); it != learning_class.end(); ++it) {
-      int key = it->first.as<int>();  // <- key
-      _argmax_to_rgb[key] = _color_map[learning_class[key].as<unsigned int>()];
-      _lable_map[key] = learning_class[key].as<unsigned int>();
-    }
+      // get normalization parameters
+        YAML::Node img_means, img_stds;
+        try {
+          img_means = arch_cfg["dataset"]["sensor"]["img_means"];
+          img_stds = arch_cfg["dataset"]["sensor"]["img_stds"];
+        } catch (YAML::Exception& ex) {
+          std::cerr << "Can't open one the mean or std dictionary from cfg"
+                    << std::endl;
+          throw ex;
+        }
+        // fill in means from yaml node
+        for (it = img_means.begin(); it != img_means.end(); ++it) {
+          // Get value
+          float mean = it->as<float>();
+          // Put in indexing vector
+          _img_means.push_back(mean);
+        }
+        // fill in stds from yaml node
+        for (it = img_stds.begin(); it != img_stds.end(); ++it) {
+          // Get value
+          float std = it->as<float>();
+          // Put in indexing vector
+          _img_stds.push_back(std);
+        }
 
-    // get image size
-    _img_h = arch_cfg["dataset"]["sensor"]["img_prop"]["height"].as<int>();
-    _img_w = arch_cfg["dataset"]["sensor"]["img_prop"]["width"].as<int>();
-    _img_d = 5; // range, x, y, z, remission
-
-    std::cout << "height from YAML "   << _img_h << std::endl;
-    std::cout << "_img_w from YAML "   << _img_w << std::endl;
-
-    // get normalization parameters
-    YAML::Node img_means, img_stds;
-    try {
-      img_means = arch_cfg["dataset"]["sensor"]["img_means"];
-      img_stds = arch_cfg["dataset"]["sensor"]["img_stds"];
-    } catch (YAML::Exception& ex) {
-      std::cerr << "Can't open one the mean or std dictionary from cfg"
-                << std::endl;
-      throw ex;
-    }
-    // fill in means from yaml node
-    for (it = img_means.begin(); it != img_means.end(); ++it) {
-      // Get value
-      float mean = it->as<float>();
-      // Put in indexing vector
-      _img_means.push_back(mean);
-    }
-    // fill in stds from yaml node
-    for (it = img_stds.begin(); it != img_stds.end(); ++it) {
-      // Get value
-      float std = it->as<float>();
-      // Put in indexing vector
-      _img_stds.push_back(std);
-    }
     cloud = pcl::PointCloud<pcl::PointXYZI>::Ptr(new pcl::PointCloud<pcl::PointXYZI>);
-  }
-
+}
+ 
   void Net::getPoints(const std::string& cloud_path)
   {
     if (pcl::io::loadPCDFile<pcl::PointXYZI>(cloud_path + "/cloud.pcd", *cloud) == -1) {
@@ -115,11 +149,11 @@ namespace rangenet {
     }
   }
 
-  std::vector<std::vector<float>> Net::doProjection_origin()
-  {
 
-    // потому что в YAML не настроем переписываем ручками
-    // находим углы в радианах в YAML написанно в градусах поэтому нужно преобразование
+  void Net::getData()
+  {
+    _img_means = {19.6365, -1.56444, 2.4058, -0.615846 ,0};
+    _img_stds = {16.7977, 18.2008, 18.0324, 1.59119, 0 };
 
     float min_z = std::numeric_limits<float>::max();
     float max_z = -std::numeric_limits<float>::max();
@@ -130,8 +164,8 @@ namespace rangenet {
         if (p.z > max_z) max_z = p.z;
     }
 
-    float _fov_down = std::numeric_limits<float>::max();
-    float _fov_up = -std::numeric_limits<float>::max();
+     _fov_down = std::numeric_limits<float>::max();
+     _fov_up = -std::numeric_limits<float>::max();
 
 
     for (const auto& p : cloud->points) 
@@ -146,6 +180,14 @@ namespace rangenet {
         _fov_up = std::max(_fov_up, pitch);
     }
     }
+}
+
+
+
+  std::vector<std::vector<float>> Net::doProjection_origin(bool yaml)
+  {
+
+    if (!yaml) getData();
 
     float fov_up = _fov_up;    // field of view up in radians
     float fov_down = _fov_down;  // field of view down in radians
@@ -216,6 +258,8 @@ namespace rangenet {
     inputs.push_back(input);
   }
 
+    calculateMean(inputs);
+
   std::vector<std::vector<float>> range_image(_img_w * _img_h, invalid_input);
 
   for (uint32_t i = 0; i < inputs.size(); ++i) {
@@ -263,7 +307,6 @@ std::vector<std::vector<float>> Net::infer()
 {
     // Project point clouds into range image
     std::vector<std::vector<float>> projected_data = doProjection_origin();
-
 
     // Prepare input tensor
     int channel_offset = _img_h * _img_w;
@@ -379,14 +422,12 @@ int i = 0;
     for (int y = 0; y < _img_h; ++y) {
       for (int x = 0; x < _img_w; ++x) {
                 size_t linear_index = y * _img_w + x;
-                if (range_image[linear_index][3] == 0 )continue;
+                if (range_image[linear_index] == invalid_input )continue;
 
                 pcl::PointXYZRGB point;
                 point.x = x;
                 point.y = y;    
                 point.z = range_image[linear_index][0];  // Дальность
-
-                 // Устанавливаем цвет
                 point.r = colors[i][0];
                 point.g = colors[i][1];
                 point.b = colors[i][2];
@@ -400,146 +441,20 @@ int i = 0;
 }
 
 
-// Преобразование облака в Range View и сохранение в PCD
-void Net::doProjection_rework(const RangeImageParams& params) 
-{
-    // Инициализация матрицы дальностей
-    std::vector<std::vector<float>> range_image(params.height,
-                                                std::vector<float>(params.width, 0.0f));
-
-// Инициализация матрицы интенсивности
-    std::vector<std::vector<float>> intensity_image(params.height,
-                                                    std::vector<float>(params.width, 0.0f));
-
-    // Переводим углы в радианы
-    float fov_up_rad = params.fov_up * M_PI / 180.0f;
-    float fov_down_rad = params.fov_down * M_PI / 180.0f;
-    float fov_rad = fov_up_rad - fov_down_rad;
-
-    // Заполняем Range Image
-    for (const auto& point : cloud->points) 
-    {
-        float range = sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
-        if (range > params.max_range) continue;  // можно как включить так и выключыить посмотреть где лучше
-
-        float yaw = atan2(point.y, point.x);    // Азимут [-π, π]
-        float pitch = asin(point.z / range);    // Элевация [-π/2, π/2]
-
-        // Обеспечиваем, что yaw ∈ [-π, π]
-        yaw = std::fmod(yaw + M_PI, 2.0f * M_PI) - M_PI;
-
-        // Вычисляем u с проверкой границ
-        int u = static_cast<int>((0.5f * (1.0f - yaw / M_PI)) * params.width);
-        u = std::max(0, std::min(u, params.width - 1));
-
-        // Обеспечиваем, что pitch ∈ [fov_down_rad, fov_up_rad]
-        pitch = std::max(fov_down_rad, std::min(pitch, fov_up_rad));
-
-        // Вычисляем v с проверкой границ
-        int v = static_cast<int>((1.0f - (pitch - fov_down_rad) / fov_rad) * params.height);
-        v = std::max(0, std::min(v, params.height - 1));
-
-        if (u >= 0 && u < params.width && v >= 0 && v < params.height) {
-            if (range_image[v][u] == 0 || range < range_image[v][u]) {
-                range_image[v][u] = range;  // Берем ближайшую точку
-                intensity_image[v][u] = point.intensity;
-            }
-        }
-    }
-
-    // Создаем новое облако точек для сохранения (u, v, range)
-    pcl::PointCloud<pcl::PointXYZI>::Ptr range_cloud(new pcl::PointCloud<pcl::PointXYZI>);
-    range_cloud->reserve(params.width * params.height / 2); 
-
-    for (int v = 0; v < params.height; ++v) {
-        for (int u = 0; u < params.width; ++u) {
-            if (range_image[v][u] > 0) {
-                pcl::PointXYZI point;
-                point.x = u;
-                point.y = v;
-                point.z = range_image[v][u];  
-                point.intensity = intensity_image[v][u];
-                range_cloud->push_back(point);
-            }
-        }
-    }
-
-    // Сохраняем в PCD
-    pcl::io::savePCDFileASCII("Reworkoutput.pcd", *range_cloud);
-    std::cout << "Range View saved to Reworkoutput.pcd" << std::endl;
-}
-
 
   }  // namespace segmentation
 }  // namespace rangenet
 
 
+
 int main()
 {
-  pcl::PointCloud<pcl::PointXYZI>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZI>);
-
-    if (pcl::io::loadPCDFile<pcl::PointXYZI>("../cloud/cloud.pcd", *cloud) == -1) {
-        std::cerr << "Error: Could not read PCD file!" << std::endl;
-    }
-
-    float min_z = std::numeric_limits<float>::max();
-    float max_z = -std::numeric_limits<float>::max();
-
-    float fov_down_rad = std::numeric_limits<float>::max();
-    float fov_up_rad = -std::numeric_limits<float>::max();
-
-    for (const auto& p : cloud->points)
-    {
-        if (p.z < min_z) min_z = p.z;
-        if (p.z > max_z) max_z = p.z;
-    }
-
-   std::vector<float> ranges;
-
-    for (const auto& p : cloud->points) 
-    {
-    float xy_dist = sqrt(p.x * p.x + p.y * p.y);
-    float pitch = atan2(p.z, xy_dist);  // угол места
-    
-    if (p.z <= min_z + 0.01f) {  // учитываем точки близкие к min_z
-        fov_down_rad = std::min(fov_down_rad, pitch);
-    }
-    if (p.z >= max_z - 0.01f) {  // учитываем точки близкие к max_z
-        fov_up_rad = std::max(fov_up_rad, pitch);
-    }
-
-    ranges.push_back(sqrt(p.x*p.x + p.y*p.y + p.z*p.z));
-    }
-
-
-    std::sort(ranges.begin(), ranges.end());
-    float max_range = ranges[ranges.size() * 0.95f];  // 95-й процентиль (игнорируем 5% выбросов)   
-
-
-    // Параметры Range Image (настрой под свой лидар)
-    RangeImageParams params;
-    params.width = 2048;
-    params.height = 64;
-    params.fov_down = fov_down_rad * 180.0f / M_PI;
-    params.fov_up = fov_up_rad * 180.0f / M_PI;
-    params.max_range = max_range * 1.1f; // +10% запаса
-
 
   rangenet::segmentation::Net test("../darknet53");
   test.getPoints("../cloud");
   test.doProjection_origin();
-  test.doProjection_rework(params);
- // test.init_model();
- //test.convertToPointCloud(test.getLabels(test.infer(), 7200));
-
-
-  std::cout << " Params параметры:  " \
-            << "\n " << " width "     << params.width     \
-            << "\n " << " height "    << params.height    \
-            << "\n " << " fov_down "  << params.fov_down  \
-            << "\n " << " fov_up "    << params.fov_up    \
-            << "\n " << " max_range " << params.max_range << std::endl;
-
+  //test.init_model();
+  //test.convertToPointCloud(test.getLabels(test.infer(), 7200));
 
   return 0;
 }
