@@ -119,6 +119,7 @@ namespace rangenet {
   {
 
     // потому что в YAML не настроем переписываем ручками
+    // находим углы в радианах в YAML написанно в градусах поэтому нужно преобразование
 
     float min_z = std::numeric_limits<float>::max();
     float max_z = -std::numeric_limits<float>::max();
@@ -146,13 +147,11 @@ namespace rangenet {
     }
     }
 
-    std::cout << "fov_up from calculations "   << _fov_up << std::endl;
-    std::cout << "fov_down from calculations " << _fov_down << std::endl;
-
-
-    float fov_up = _fov_up / 180.0 * M_PI;    // field of view up in radians
-    float fov_down = _fov_down / 180.0 * M_PI;  // field of view down in radians
+    float fov_up = _fov_up;    // field of view up in radians
+    float fov_down = _fov_down;  // field of view down in radians
     float fov = std::abs(fov_down) + std::abs(fov_up); // get field of view total in radians
+    //float fov = fov_up - fov_down; // get field of view total in radians
+
 
     std::vector<float> ranges;
     std::vector<float> xs;
@@ -217,15 +216,13 @@ namespace rangenet {
     inputs.push_back(input);
   }
 
-
-
-
-
   std::vector<std::vector<float>> range_image(_img_w * _img_h, invalid_input);
 
-
   for (uint32_t i = 0; i < inputs.size(); ++i) {
-    range_image[int(sorted_proj_ys[i] * _img_w + sorted_proj_xs[i])] = inputs[i];
+    int x = static_cast<int>(sorted_proj_xs[i]);
+    int y = static_cast<int>(sorted_proj_ys[i]);
+    int idx = y * _img_w + x;
+    range_image[idx] = inputs[i];
   }
 
   pcl::PointCloud<pcl::PointXYZI>::Ptr range_cloud(new pcl::PointCloud<pcl::PointXYZI>);
@@ -234,11 +231,11 @@ namespace rangenet {
     for (int y = 0; y < _img_h; ++y) {
       for (int x = 0; x < _img_w; ++x) {
                 size_t linear_index = y * _img_w + x;
-                if (range_image[linear_index][3] == 0 )continue;
+                if (range_image[linear_index] == invalid_input )continue;
 
                 pcl::PointXYZI point;
                 point.x = x;
-                point.y = y;    
+                point.y = y;
                 point.z = range_image[linear_index][0];  // Дальность
                 point.intensity = range_image[linear_index][4];
                 range_cloud->push_back(point);
@@ -349,9 +346,8 @@ std::vector<std::vector<float>> Net::infer()
 }
 
 
-std::vector<std::array<uint8_t, 3>> Net::getLabels(
-    const std::vector<std::vector<float>>& semantic_scan, 
-    const uint32_t& num_points) 
+std::vector<std::array<uint8_t, 3>> Net::getLabels(const std::vector<std::vector<float>>& semantic_scan, 
+                                                   const uint32_t& num_points) 
 {
     std::vector<std::array<uint8_t, 3>> labels(num_points);
     std::vector<float> labels_prob(num_points, 0.0f);
@@ -401,8 +397,6 @@ int i = 0;
 
     pcl::io::savePCDFileASCII("Coloroutput.pcd", *cloud);
     std::cout << "Range View saved to " << "Coloroutput.pcd" << std::endl;
-
-    //return cloud;
 }
 
 
@@ -461,9 +455,9 @@ void Net::doProjection_rework(const RangeImageParams& params)
         for (int u = 0; u < params.width; ++u) {
             if (range_image[v][u] > 0) {
                 pcl::PointXYZI point;
-                point.x = u;  // Координата u (ширина)
-                point.y = v;  // Координата v (высота)
-                point.z = range_image[v][u];  // Дальность
+                point.x = u;
+                point.y = v;
+                point.z = range_image[v][u];  
                 point.intensity = intensity_image[v][u];
                 range_cloud->push_back(point);
             }
@@ -478,11 +472,6 @@ void Net::doProjection_rework(const RangeImageParams& params)
 
   }  // namespace segmentation
 }  // namespace rangenet
-
-
-// Параметры Range Image (настрой под свой лидар)
-
-
 
 
 int main()
@@ -526,7 +515,6 @@ int main()
     std::sort(ranges.begin(), ranges.end());
     float max_range = ranges[ranges.size() * 0.95f];  // 95-й процентиль (игнорируем 5% выбросов)   
 
-    std::cout << ranges.size() << std::endl;
 
     // Параметры Range Image (настрой под свой лидар)
     RangeImageParams params;
@@ -537,16 +525,21 @@ int main()
     params.max_range = max_range * 1.1f; // +10% запаса
 
 
-
-  
-
-
   rangenet::segmentation::Net test("../darknet53");
   test.getPoints("../cloud");
   test.doProjection_origin();
   test.doProjection_rework(params);
-  //test.init_model();
-  //test.convertToPointCloud(test.getLabels(test.infer(), 7200));
+ // test.init_model();
+ //test.convertToPointCloud(test.getLabels(test.infer(), 7200));
+
+
+  std::cout << " Params параметры:  " \
+            << "\n " << " width "     << params.width     \
+            << "\n " << " height "    << params.height    \
+            << "\n " << " fov_down "  << params.fov_down  \
+            << "\n " << " fov_up "    << params.fov_up    \
+            << "\n " << " max_range " << params.max_range << std::endl;
+
 
   return 0;
 }
