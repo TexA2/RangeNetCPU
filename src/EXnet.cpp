@@ -149,7 +149,6 @@ namespace rangenet {
     }
   }
 
-
   void Net::getData()
   {
     _img_means = {19.6365, -1.56444, 2.4058, -0.615846 ,0};
@@ -182,15 +181,17 @@ namespace rangenet {
     }
 }
 
-
-
   std::vector<std::vector<float>> Net::doProjection_origin(bool yaml)
   {
 
     if (!yaml) getData();
 
+    std::cout << "_fov_up " << _fov_up << std::endl;
+    std::cout << "_fov_down " << _fov_down << std::endl;
+
+
     float fov_up = _fov_up;    // field of view up in radians
-    float fov_down = _fov_down;  // field of view down in radians
+    float fov_down = _fov_down  - 0.2;  // field of view down in radians
     float fov = std::abs(fov_down) + std::abs(fov_up); // get field of view total in radians
     //float fov = fov_up - fov_down; // get field of view total in radians
 
@@ -268,27 +269,6 @@ namespace rangenet {
     int idx = y * _img_w + x;
     range_image[idx] = inputs[i];
   }
-
-  pcl::PointCloud<pcl::PointXYZI>::Ptr range_cloud(new pcl::PointCloud<pcl::PointXYZI>);
-  range_cloud->reserve(_img_h * _img_w); 
-
-    for (int y = 0; y < _img_h; ++y) {
-      for (int x = 0; x < _img_w; ++x) {
-                size_t linear_index = y * _img_w + x;
-                if (range_image[linear_index] == invalid_input )continue;
-
-                pcl::PointXYZI point;
-                point.x = x;
-                point.y = y;
-                point.z = range_image[linear_index][0];  // Дальность
-                point.intensity = range_image[linear_index][4];
-                range_cloud->push_back(point);
-        }
-    }
-
-    pcl::io::savePCDFileASCII("output.pcd", *range_cloud);
-    std::cout << "Range View saved to " << "output.pcd" << std::endl;
-
     return range_image;
   }
 
@@ -301,7 +281,6 @@ namespace rangenet {
 
     _session = std::make_unique<Ort::Session>(_env, (_model_path + "/model.onnx").c_str(), session_options);
   }
-
 
 std::vector<std::vector<float>> Net::infer()
 {
@@ -411,36 +390,77 @@ std::vector<std::array<uint8_t, 3>> Net::getLabels(const std::vector<std::vector
 }
 
 
-void Net::convertToPointCloud(const std::vector<std::array<uint8_t, 3>>& colors)
+void Net::convertToPointCloud(const std::vector<std::vector<float>>& range_image)
 {
-      std::vector<std::vector<float>> range_image = doProjection_origin();
-    // Создаем облако точек
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-    cloud->resize(range_image.size());
+  pcl::PointCloud<pcl::PointXYZI>::Ptr range_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+  range_cloud->reserve(_img_h * _img_w); 
 
-int i = 0;
-    for (int y = 0; y < _img_h; ++y) {
-      for (int x = 0; x < _img_w; ++x) {
-                size_t linear_index = y * _img_w + x;
-                if (range_image[linear_index] == invalid_input )continue;
+// 2D проекция (сферическая проекция) для наглядности или для преобазования в картинку
+// проще воспринимать человеку и видно что из себя представляют данные
+int resolution_x = 1920;
+int resolution_y = 1080;
+VirtualCenter<float> center_coorditan {-3.8, 0, 3.5};
 
-                pcl::PointXYZRGB point;
-                point.x = x;
-                point.y = y;    
-                point.z = range_image[linear_index][0];  // Дальность
-                point.r = colors[i][0];
-                point.g = colors[i][1];
-                point.b = colors[i][2];
-                cloud->push_back(point);
-                ++i;
-        }
-    }
+  for (const auto& point : range_image)
+  {
+    if (point == invalid_input )continue;
+    float theta = std::atan2(point[2] - center_coorditan.y, point[1] - center_coorditan.x);
 
-    pcl::io::savePCDFileASCII("Coloroutput.pcd", *cloud);
-    std::cout << "Range View saved to " << "Coloroutput.pcd" << std::endl;
+    const double norm_squared = point[1]*point[1] + point[2]*point[2] + point[3]*point[3];
+    const double norm = std::sqrt(norm_squared);
+
+    float phi = std::acos((point[3] - center_coorditan.z) / norm);
+
+    pcl::PointXYZI new_point;
+
+    new_point.x = std::floor((theta + M_PI) / (2 * M_PI) * resolution_x );
+    new_point.y = std::floor(phi / M_PI * resolution_y );
+    //new_point.z = point[0]; //вернуть если нужен объем, а так получаем 2Д картинку
+    new_point.intensity = point[4];
+    range_cloud->push_back(new_point);
+  }
+
+    pcl::io::savePCDFileASCII("output.pcd", *range_cloud);
+    std::cout << "Range View saved to " << "output.pcd" << std::endl;  
 }
 
 
+void Net::convertToPointCloudColor(const std::vector<std::array<uint8_t, 3>>& colors,
+                                   const std::vector<std::vector<float>>& range_image)
+{
+
+  pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+
+  int i = 0;
+  int resolution_x = 1920;
+  int resolution_y = 1080;
+  VirtualCenter<float> center_coorditan {-3.8, 0, 3.5};
+
+  for (const auto& point : range_image)
+  {
+    if (point == invalid_input )continue;
+    float theta = std::atan2(point[2] - center_coorditan.y, point[1] - center_coorditan.x);
+
+    const double norm_squared = point[1]*point[1] + point[2]*point[2] + point[3]*point[3];
+    const double norm = std::sqrt(norm_squared);
+
+    float phi = std::acos((point[3] - center_coorditan.z) / norm);
+
+    pcl::PointXYZRGB new_point;
+
+    new_point.x = std::floor((theta + M_PI) / (2 * M_PI) * resolution_x );
+    new_point.y = std::floor(phi / M_PI * resolution_y );
+    new_point.r = colors[i][0];
+    new_point.g = colors[i][1];
+    new_point.b = colors[i][2];
+    cloud->push_back(new_point);
+    ++i;
+  }
+
+
+  pcl::io::savePCDFileASCII("Coloroutput.pcd", *cloud);
+  std::cout << "Range View saved to " << "Coloroutput.pcd" << std::endl;
+}
 
   }  // namespace segmentation
 }  // namespace rangenet
@@ -452,9 +472,10 @@ int main()
 
   rangenet::segmentation::Net test("../darknet53");
   test.getPoints("../cloud");
-  test.doProjection_origin();
-  //test.init_model();
-  //test.convertToPointCloud(test.getLabels(test.infer(), 7200));
+  std::vector<std::vector<float>> cloud = test.doProjection_origin(false);
+  test.convertToPointCloud(cloud);
+ // test.init_model();
+ // test.convertToPointCloud(test.getLabels(test.infer(), 7200));
 
   return 0;
 }
