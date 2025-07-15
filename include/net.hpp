@@ -45,6 +45,13 @@ struct RangeImageParams {
     float max_range = 100.0f; // Максимальная дальность (м)
 };
 
+template <typename T>
+struct VirtualCenter {
+  T x;
+  T y;
+  T z;
+};
+
 
 
 namespace rangenet {
@@ -74,7 +81,11 @@ namespace rangenet {
     std::vector<std::array<uint8_t, 3>> getLabels(const std::vector<std::vector<float>>& semantic_scan,
                                                   const uint32_t& num_points);
 
-    void convertToPointCloud(const std::vector<std::array<uint8_t, 3>>& colors);
+
+    void convertToPointCloud(const std::vector<std::vector<float>>& range_imag);                                   
+
+    void convertToPointCloudColor(const std::vector<std::array<uint8_t, 3>>& colors,
+                                  const std::vector<std::vector<float>>& range_image);
 
     void getData();
 
